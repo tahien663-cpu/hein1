@@ -1,4 +1,3 @@
-
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
@@ -31,17 +30,69 @@ for (const envVar of requiredEnvVars) {
 }
 
 const app = express();
+
+// CORS configuration - Cải thiện để hỗ trợ multiple origins
+const allowedOrigins = [
+  'https://hein1.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173', // Vite default port
+  'http://localhost:5174'  // Vite alternative port
+];
+
 app.use(cors({
-  origin: 'https://hein1.onrender.com',
-  methods: ['GET','POST','DELETE','PUT','PATCH'],
-  allowedHeaders: ['Content-Type','Authorization']
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  optionsSuccessStatus: 200 // Some legacy browsers choke on 204
 }));
+
+// Preflight requests
+app.options('*', cors());
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const openRouterKey = process.env.OPENROUTER_API_KEY;
 const jwtSecret = process.env.JWT_SECRET || 'supersecret';
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    service: 'Hein AI Backend'
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Hein AI Backend API', 
+    version: '1.0.0',
+    endpoints: [
+      'POST /api/register',
+      'POST /api/login', 
+      'GET /api/chat/history',
+      'POST /api/chat',
+      'POST /api/generate-image',
+      'DELETE /api/chat/:chatId',
+      'DELETE /api/message/:messageId'
+    ]
+  });
+});
 
 // Middleware kiểm tra kích thước payload
 app.use((req, res, next) => {
@@ -52,10 +103,19 @@ app.use((req, res, next) => {
   next();
 });
 
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path} from ${req.get('origin') || 'unknown'}`);
+  next();
+});
+
 // Global error handler
 app.use((err, req, res, next) => {
   console.error('Lỗi server:', err);
-  res.status(500).json({ error: 'Lỗi server nội bộ', details: err.message || 'Lỗi không xác định' });
+  res.status(500).json({ 
+    error: 'Lỗi server nội bộ', 
+    details: process.env.NODE_ENV === 'development' ? err.message : 'Lỗi không xác định'
+  });
 });
 
 // Middleware xác thực JWT token
@@ -71,6 +131,7 @@ function authenticateToken(req, res, next) {
     req.user = jwt.verify(token, jwtSecret);
     next();
   } catch (err) {
+    console.error('JWT verification failed:', err.message);
     return res.status(403).json({ error: 'Token hết hạn hoặc không hợp lệ' });
   }
 }
@@ -266,12 +327,23 @@ app.post('/api/register', async (req, res) => {
   try {
     console.log('=== REGISTER DEBUG START ===');
     console.log('Request body:', req.body);
+    console.log('Origin:', req.get('origin'));
     
     const { name, email, password } = req.body;
     
     if (!name || !email || !password) {
       console.log('Thiếu trường dữ liệu');
       return res.status(400).json({ error: 'Thiếu thông tin bắt buộc' });
+    }
+
+    // Validation
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Mật khẩu phải có ít nhất 6 ký tự' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Email không hợp lệ' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -332,6 +404,8 @@ app.post('/api/register', async (req, res) => {
 // Endpoint đăng nhập
 app.post('/api/login', async (req, res) => {
   try {
+    console.log('Login request from:', req.get('origin'));
+    
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Thiếu email hoặc mật khẩu' });
@@ -344,16 +418,27 @@ app.post('/api/login', async (req, res) => {
       .single();
 
     if (error || !user) {
+      console.log('User not found:', email);
       return res.status(401).json({ error: 'Email hoặc mật khẩu không đúng' });
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
+      console.log('Invalid password for:', email);
       return res.status(401).json({ error: 'Email hoặc mật khẩu không đúng' });
     }
 
     const token = jwt.sign({ id: user.id, email: user.email }, jwtSecret, { expiresIn: '7d' });
-    res.json({ token, user: { name: user.name, email: user.email } });
+    console.log('Login successful for:', email);
+    
+    res.json({ 
+      token, 
+      user: { 
+        id: user.id,
+        name: user.name, 
+        email: user.email 
+      } 
+    });
   } catch (err) {
     console.error('Lỗi đăng nhập:', err.message);
     res.status(500).json({ error: 'Lỗi server', details: err.message });
@@ -364,6 +449,7 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/chat/history', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    console.log('Fetching chat history for user:', userId);
 
     const { data: chats, error: chatsError } = await supabase
       .from('chats')
@@ -396,6 +482,7 @@ app.get('/api/chat/history', authenticateToken, async (req, res) => {
       messages: allMessages?.filter(m => m.chat_id === chat.id) || []
     }));
 
+    console.log(`Returning ${history.length} chats for user ${userId}`);
     res.json({ history });
   } catch (err) {
     console.error('Lỗi lấy lịch sử chat:', err);
@@ -414,6 +501,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     let currentChatId = chatId;
 
+    console.log(`Processing chat request for user ${userId}, chatId: ${currentChatId}`);
+
     if (!currentChatId) {
       const newChatId = uuidv4();
       const { error: insertError } = await supabase
@@ -431,6 +520,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         return res.status(500).json({ error: 'Lỗi tạo chat mới', details: insertError.message });
       }
       currentChatId = newChatId;
+      console.log('Created new chat:', newChatId);
     } else {
       const { data: chat, error: chatError } = await supabase
         .from('chats')
@@ -529,6 +619,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             continue;
           }
 
+          console.log('Performing web search for:', args.query);
           const searchResults = await webSearch(args.query);
 
           formattedMessages.push({
@@ -577,28 +668,30 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       aiMessage = toolData.choices[0].message.content;
     }
 
+    // Save messages to database
+    const messagesToSave = [];
     const lastUserMsg = messages[messages.length - 1];
     if (lastUserMsg.role === 'user') {
-      await supabase
-        .from('messages')
-        .insert([{ 
-          id: uuidv4(),
-          chat_id: currentChatId, 
-          role: 'user', 
-          content: lastUserMsg.content, 
-          timestamp: new Date().toISOString() 
-        }]);
+      messagesToSave.push({ 
+        id: uuidv4(),
+        chat_id: currentChatId, 
+        role: 'user', 
+        content: lastUserMsg.content, 
+        timestamp: new Date().toISOString() 
+      });
     }
 
-    await supabase
-      .from('messages')
-      .insert([{ 
-        id: messageId,
-        chat_id: currentChatId, 
-        role: 'ai', 
-        content: aiMessage, 
-        timestamp: new Date().toISOString() 
-      }]);
+    messagesToSave.push({ 
+      id: messageId,
+      chat_id: currentChatId, 
+      role: 'ai', 
+      content: aiMessage, 
+      timestamp: new Date().toISOString() 
+    });
+
+    if (messagesToSave.length > 0) {
+      await supabase.from('messages').insert(messagesToSave);
+    }
 
     await supabase
       .from('chats')
@@ -608,6 +701,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       })
       .eq('id', currentChatId);
 
+    console.log('Chat response sent successfully');
     res.json({
       message: aiMessage,
       messageId,
@@ -630,6 +724,8 @@ app.post('/api/generate-image', authenticateToken, async (req, res) => {
 
     const userId = req.user.id;
     let currentChatId = chatId;
+
+    console.log(`Generating image for user ${userId}, prompt: "${prompt}"`);
 
     if (!currentChatId) {
       const newChatId = uuidv4();
@@ -720,8 +816,10 @@ app.post('/api/generate-image', authenticateToken, async (req, res) => {
       })
       .eq('id', currentChatId);
 
+    console.log('Image generated successfully');
     res.json({
       message: `<img src="${imageUrl}" alt="Generated Image" />`,
+      imageUrl: imageUrl,
       messageId,
       timestamp: new Date().toISOString(),
       chatId: currentChatId
@@ -738,6 +836,8 @@ app.delete('/api/chat/:chatId', authenticateToken, async (req, res) => {
     const { chatId } = req.params;
     const userId = req.user.id;
 
+    console.log(`Deleting chat ${chatId} for user ${userId}`);
+
     const { data: chat, error: chatError } = await supabase
       .from('chats')
       .select('id')
@@ -750,6 +850,12 @@ app.delete('/api/chat/:chatId', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy chat' });
     }
 
+    // Delete messages first (cascade delete might not be set up)
+    await supabase
+      .from('messages')
+      .delete()
+      .eq('chat_id', chatId);
+
     const { error: deleteError } = await supabase
       .from('chats')
       .delete()
@@ -760,11 +866,7 @@ app.delete('/api/chat/:chatId', authenticateToken, async (req, res) => {
       return res.status(500).json({ error: 'Lỗi xóa chat', details: deleteError.message });
     }
 
-    await supabase
-      .from('messages')
-      .delete()
-      .eq('chat_id', chatId);
-
+    console.log('Chat deleted successfully');
     res.json({ message: 'Chat đã được xóa thành công' });
   } catch (err) {
     console.error('Lỗi xóa chat:', err);
@@ -777,6 +879,8 @@ app.delete('/api/message/:messageId', authenticateToken, async (req, res) => {
   try {
     const { messageId } = req.params;
     const userId = req.user.id;
+
+    console.log(`Deleting message ${messageId} for user ${userId}`);
 
     const { data: message, error: messageError } = await supabase
       .from('messages')
@@ -811,6 +915,7 @@ app.delete('/api/message/:messageId', authenticateToken, async (req, res) => {
       return res.status(500).json({ error: 'Lỗi xóa tin nhắn', details: deleteError.message });
     }
 
+    console.log('Message deleted successfully');
     res.json({ message: 'Tin nhắn đã được xóa thành công' });
   } catch (err) {
     console.error('Lỗi xóa tin nhắn:', err);
@@ -818,8 +923,30 @@ app.delete('/api/message/:messageId', authenticateToken, async (req, res) => {
   }
 });
 
+// 404 handler for undefined routes
+app.use('*', (req, res) => {
+  res.status(404).json({ 
+    error: 'Endpoint không tồn tại',
+    availableEndpoints: [
+      'GET /',
+      'GET /health',
+      'POST /api/register',
+      'POST /api/login',
+      'GET /api/chat/history',
+      'POST /api/chat',
+      'POST /api/generate-image',
+      'DELETE /api/chat/:chatId',
+      'DELETE /api/message/:messageId'
+    ]
+  });
+});
+
 // Khởi động server
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server đang chạy tại http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
+  console.log(`🌍 Accessible externally at http://0.0.0.0:${PORT}`);
+  console.log(`📱 Frontend URL: https://hein1.onrender.com`);
+  console.log(`📊 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
