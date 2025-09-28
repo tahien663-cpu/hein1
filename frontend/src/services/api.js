@@ -1,10 +1,16 @@
-// src/services/api.js - Singleton API Service (Enhanced)
-const API_BASE_URL = 'http://localhost:3001/api';  // TODO: move to env for prod
+// src/services/api.js - Singleton API Service (Enhanced for https://test-d9o3.onrender.com)
+const API_BASE_URL = 'https://test-d9o3.onrender.com/api'; // Updated to target backend
 const DEFAULT_TIMEOUT_MS = 12000;
 
 class ApiService {
+  static instance = null;
+
   constructor() {
-    this.baseURL = API_BASE_URL;
+    if (!ApiService.instance) {
+      this.baseURL = API_BASE_URL;
+      ApiService.instance = this;
+    }
+    return ApiService.instance;
   }
 
   getToken() {
@@ -34,9 +40,10 @@ class ApiService {
       clearTimeout(timeout);
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        // auto sign-out on 401/403
         if (response.status === 401 || response.status === 403) {
           localStorage.removeItem('token');
+          localStorage.removeItem('userName');
+          localStorage.removeItem('userEmail');
         }
         throw new Error(data.error || `HTTP ${response.status}`);
       }
@@ -51,42 +58,69 @@ class ApiService {
   }
 
   // Auth
-  async register(userData) {
-    return this.request('/register', { method: 'POST', body: JSON.stringify(userData), includeAuth: false });
+  async login({ email, password }) {
+    const data = await this.request('/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+      includeAuth: false,
+    });
+    localStorage.setItem('token', data.token);
+    localStorage.setItem('userName', data.user.name);
+    localStorage.setItem('userEmail', data.user.email);
+    return data;
   }
 
-  async login(credentials) {
-    return this.request('/login', { method: 'POST', body: JSON.stringify(credentials), includeAuth: false });
-  }
-
-  async verifyToken() {
-    return this.request('/verify', { method: 'GET', includeAuth: true });
+  async register({ email, password, name }) {
+    const data = await this.request('/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, name }),
+      includeAuth: false,
+    });
+    return data;
   }
 
   // User
-  async getUserProfile() {
-    return this.request('/user/profile', { method: 'GET' });
+  async updateProfile({ name, email }) {
+    const data = await this.request('/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ name, email }),
+    });
+    localStorage.setItem('userName', data.user.name);
+    localStorage.setItem('userEmail', data.user.email);
+    return data;
   }
 
-  async updateProfile(profileData) {
-    return this.request('/update-profile', { method: 'PUT', body: JSON.stringify(profileData) });
-  }
-
-  async changePassword(passwordData) {
-    return this.request('/user/change-password', { method: 'PUT', body: JSON.stringify(passwordData) });
+  async changePassword({ currentPassword, newPassword }) {
+    return this.request('/password', {
+      method: 'PUT',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
   }
 
   async deleteAccount() {
-    return this.request('/user/account', { method: 'DELETE' });
+    const data = await this.request('/account', { method: 'DELETE' });
+    localStorage.clear();
+    return data;
   }
 
   // Chat
-  async sendMessage(message) {
-    return this.request('/chat', { method: 'POST', body: JSON.stringify({ message }) });
+  async sendMessage(chatId, message) {
+    return this.request(chatId ? `/chat/${chatId}` : '/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    });
   }
 
   async getChatHistory() {
     return this.request('/chat/history', { method: 'GET' });
+  }
+
+  async deleteChat(chatId) {
+    return this.request(`/chat/${chatId}`, { method: 'DELETE' });
+  }
+
+  async deleteMessage(chatId, messageId) {
+    return this.request(`/chat/${chatId}/message/${messageId}`, { method: 'DELETE' });
   }
 }
 
